@@ -77,7 +77,7 @@ if [[ -d "$TMP/.profile.d" ]]; then mv "$TMP/.profile.d" ".profile.d"; fi
 # --- Promote standalone output to build root
 # This mimics the "runner stage" from recommended Dockerfile:
 # COPY --from=builder /app/apps/$APP/.next/standalone ./
-cp -R "$TMP/standalone" .
+cp -R "$TMP/standalone/." .
 
 # --- Restore static + public to expected paths
 # Mimics:
