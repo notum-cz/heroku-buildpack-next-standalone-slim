@@ -39,6 +39,11 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# --- Preserve standalone output
+mkdir -p "$TMP/standalone"
+cp -R "$STANDALONE_DIR/." "$TMP/standalone"
+
+
 # --- Preserve required runtime/buildpack folders
 # `.heroku/` contains the Node runtime installed by the Node buildpack.
 # `.profile.d/` contains profile scripts added by buildpacks (keep it).
@@ -70,9 +75,9 @@ if [[ -d "$TMP/.heroku" ]]; then mv "$TMP/.heroku" ".heroku"; fi
 if [[ -d "$TMP/.profile.d" ]]; then mv "$TMP/.profile.d" ".profile.d"; fi
 
 # --- Promote standalone output to build root
-# This mimics the "runner stage" in your Dockerfile:
+# This mimics the "runner stage" from recommended Dockerfile:
 # COPY --from=builder /app/apps/$APP/.next/standalone ./
-cp -R "$STANDALONE_DIR/." .
+cp -R "$TMP/standalone" .
 
 # --- Restore static + public to expected paths
 # Mimics:
