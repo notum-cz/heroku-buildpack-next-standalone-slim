@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Heroku buildpack compile args:
+#   $1 = build dir, $2 = cache dir, $3 = env dir (config vars materialized as files)
+BUILD_DIR="$1"
+CACHE_DIR="$2"
+ENV_DIR="$3"
+
+# Load Heroku config vars (files) into env:
+# Heroku exposes config vars as files in $ENV_DIR; filename becomes the env var name.
+if [[ -d "$ENV_DIR" ]]; then
+  for e in "$ENV_DIR"/*; do
+    [[ -f "$e" ]] || continue
+    export "$(basename "$e")"="$(cat "$e")"
+  done
+fi
+
+# This buildpack is meant to run AFTER `heroku/nodejs`.
+# Assumptions:
+# - Your Next app has `output: 'standalone'` enabled in `apps/$APP/next.config.*`
+# - `next build` already ran, producing `apps/$APP/.next/standalone`
+# - `APP` is set (e.g. `ui`)
+APP="${APP:?APP is required (e.g. ui)}"
+
+cd "$BUILD_DIR"
+
+APP_DIR="apps/$APP"
+STANDALONE_DIR="$APP_DIR/.next/standalone"
+STATIC_DIR="$APP_DIR/.next/static"
+PUBLIC_DIR="$APP_DIR/public"
+
+if [[ ! -d "$STANDALONE_DIR" ]]; then
+  echo "Missing standalone output: $STANDALONE_DIR" >&2
+  echo "Enable Next output: 'standalone' and ensure the build ran." >&2
+  exit 1
+fi
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# --- Preserve required runtime/buildpack folders
+# `.heroku/` contains the Node runtime installed by the Node buildpack.
+# `.profile.d/` contains profile scripts added by buildpacks (keep it).
+if [[ -d ".heroku" ]]; then mv ".heroku" "$TMP/.heroku"; fi
+if [[ -d ".profile.d" ]]; then mv ".profile.d" "$TMP/.profile.d"; fi
+
+# Preserve root control files if present (we'll restore them after slimming)
+if [[ -f "Procfile" ]]; then cp -f "Procfile" "$TMP/Procfile"; fi
+if [[ -f "app.json" ]]; then cp -f "app.json" "$TMP/app.json"; fi
+
+# --- Preserve assets that are NOT included in `.next/standalone`
+# Standalone output includes traced server files + minimal node_modules, but not always static/public.
+if [[ -d "$STATIC_DIR" ]]; then
+  mkdir -p "$TMP/assets"
+  cp -R "$STATIC_DIR" "$TMP/assets/static"
+fi
+
+if [[ -d "$PUBLIC_DIR" ]]; then
+  mkdir -p "$TMP/assets"
+  cp -R "$PUBLIC_DIR" "$TMP/assets/public"
+fi
+
+# --- Wipe build directory
+# This is what actually reduces slug size: we delete everything not needed at runtime.
+rm -rf ./* ./.??* ./.?* 2>/dev/null || true
+
+# Restore required runtime/buildpack folders
+if [[ -d "$TMP/.heroku" ]]; then mv "$TMP/.heroku" ".heroku"; fi
+if [[ -d "$TMP/.profile.d" ]]; then mv "$TMP/.profile.d" ".profile.d"; fi
+
+# --- Promote standalone output to build root
+# This mimics the "runner stage" in your Dockerfile:
+# COPY --from=builder /app/apps/$APP/.next/standalone ./
+cp -R "$STANDALONE_DIR/." .
+
+# --- Restore static + public to expected paths
+# Mimics:
+# COPY ... /app/apps/$APP/.next/static ./apps/$APP/.next/static
+# COPY ... /app/apps/$APP/public      ./apps/$APP/public
+mkdir -p "$APP_DIR/.next"
+
+if [[ -d "$TMP/assets/static" ]]; then
+  cp -R "$TMP/assets/static" "$APP_DIR/.next/static"
+fi
+
+if [[ -d "$TMP/assets/public" ]]; then
+  cp -R "$TMP/assets/public" "$APP_DIR/public"
+fi
+
+# --- Procfile handling
+# If the app supplied a Procfile, restore it.
+# Otherwise, provide a sane default for standalone: `apps/$APP/server.js` is created by Next standalone.
+if [[ -f "$TMP/Procfile" ]]; then
+  cp -f "$TMP/Procfile" "Procfile"
+else
+  echo "web: node $APP_DIR/server.js" > "Procfile"
+fi
+
+# Restore app.json if it existed
+if [[ -f "$TMP/app.json" ]]; then
+  cp -f "$TMP/app.json" "app.json"
+fi
+
+# Sanity check: standalone server should exist
+if [[ ! -f "$APP_DIR/server.js" ]]; then
+  echo "Expected standalone server not found: $APP_DIR/server.js" >&2
+  echo "Check that Next produced standalone output correctly." >&2
+  exit 1
+fi
+
+echo "next-standalone-slim: promoted $STANDALONE_DIR and removed non-runtime files"

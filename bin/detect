@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BUILD_DIR="$1"
+cd "$BUILD_DIR"
+
+if compgen -G "apps/*/next.config.*" > /dev/null; then
+  echo "Next.js"
+  exit 0
+fi
+
+exit 1
